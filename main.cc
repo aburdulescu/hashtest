@@ -42,6 +42,85 @@ private:
 
 uint64_t Timer::total = 0;
 
+enum Status {
+    kOk,
+    kFileOpen,
+    kFileStat,
+    kFileRead,
+};
+
+Status hashWithXX(const char* path, int chunkSize, std::vector<std::array<uint8_t, 16>>& out) {
+    FILE* f = fopen(path, "rb");
+    if (f == nullptr) {
+        std::cerr << "error: fopen: " << strerror(errno) << "\n";
+        return kFileOpen;
+    }
+
+    struct stat st;
+    if(stat(path, &st) < 0) {
+        std::cerr << "error: fstat: " << strerror(errno) << "\n";
+        return kFileStat;
+    }
+
+    const int kHashSize = 16;
+
+    const long int kBufSize = chunkSize*(1<<20);
+    uint8_t* buf = new uint8_t[kBufSize];
+
+    const int kNrChunks = std::ceil(static_cast<double>(st.st_size) / static_cast<double>(kBufSize));
+
+    out.reserve(kNrChunks);
+
+    int i = 0;
+
+    bool isErr = false;
+    while(!feof(f)) {
+        int n = fread(buf, 1, kBufSize, f);
+        if (ferror(f)) {
+            std::cerr << "error: fread\n";
+            isErr = true;
+            break;
+        }
+        XXH128_hash_t h;
+        {
+            Timer t;
+            h = XXH3_128bits(buf, n);
+        }
+        XXH128_canonical_t c;
+        XXH128_canonicalFromHash(&c, h);
+        std::array<uint8_t, kHashSize> hash;
+        memcpy(hash.data(), c.digest, sizeof(c.digest));
+        out.insert(out.begin()+i, hash);
+        i++;
+    }
+
+    fclose(f);
+
+    if(isErr) {
+        return kFileRead;
+    }
+
+    const int kFinalHashBufSize = kNrChunks*kHashSize;
+    uint8_t finalHashBuf[kFinalHashBufSize];
+    for(int i=0; i<out.size(); ++i) {
+        memcpy(finalHashBuf+(i*kHashSize), out[i].data(), out[i].size());
+    }
+
+    XXH128_hash_t h;
+    {
+        Timer t;
+        h = XXH3_128bits(finalHashBuf, kFinalHashBufSize);
+    }
+    XXH128_canonical_t c;
+    XXH128_canonicalFromHash(&c, h);
+    printHash(c.digest, kHashSize);
+
+    auto totalMs = (Timer::total * 0.001);
+    std::cout << totalMs << "ms\n";
+
+    return kOk;
+}
+
 int main(int argc, char* argv[]) {
     const int nargs = argc-1;
     if (nargs != 3) {
@@ -162,7 +241,7 @@ int main(int argc, char* argv[]) {
 
         auto totalMs = (Timer::total * 0.001);
         std::cout << totalMs << "ms\n";
-    } else if (hashName == "xx") {
+    } else if (hashName == "xx_inc") {
         FILE* f = fopen(path, "rb");
         if (f == nullptr) {
             std::cerr << "error: fopen: " << strerror(errno) << "\n";
@@ -203,10 +282,19 @@ int main(int argc, char* argv[]) {
         }
         XXH128_canonical_t finalHashCanonical;
         XXH128_canonicalFromHash(&finalHashCanonical, finalHash);
-        printHash(finalHashCanonical.digest, sizeof(finalHashCanonical));
+        printHash(finalHashCanonical.digest, sizeof(finalHashCanonical.digest));
 
         auto totalMs = (Timer::total * 0.001);
         std::cout << totalMs << "ms\n";
+    } else if(hashName == "xx") {
+        std::vector<std::array<uint8_t, 16>> out;
+        auto status = hashWithXX(path, atoi(args[2]), out);
+        if (status != kOk) {
+            return 1;
+        }
+        // for(int i=0; i<out.size(); ++i) {
+        //     printHash(out[i].data(), out[i].size());
+        // }
     } else {
         std::cerr << "error: hash '" << hashName << "' is not supported\n";
         return 1;
